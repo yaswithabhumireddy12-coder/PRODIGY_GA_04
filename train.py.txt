@@ -1,0 +1,143 @@
+import tensorflow as tf
+import matplotlib.pyplot as plt
+import os
+
+# -------------------------
+# Load Dataset (Place manually)
+# -------------------------
+PATH = "dataset/train"
+
+train_dataset = tf.keras.preprocessing.image_dataset_from_directory(
+    PATH,
+    labels=None,
+    image_size=(256,256),
+    batch_size=1
+)
+
+# Normalize
+def normalize(image):
+    return (image / 127.5) - 1
+
+train_dataset = train_dataset.map(lambda x: normalize(x))
+
+# -------------------------
+# Generator
+# -------------------------
+def Generator():
+    inputs = tf.keras.layers.Input(shape=[256,256,3])
+
+    down1 = tf.keras.layers.Conv2D(64,4,2,'same')(inputs)
+    down1 = tf.keras.layers.LeakyReLU()(down1)
+
+    down2 = tf.keras.layers.Conv2D(128,4,2,'same')(down1)
+    down2 = tf.keras.layers.BatchNormalization()(down2)
+    down2 = tf.keras.layers.LeakyReLU()(down2)
+
+    down3 = tf.keras.layers.Conv2D(256,4,2,'same')(down2)
+    down3 = tf.keras.layers.BatchNormalization()(down3)
+    down3 = tf.keras.layers.LeakyReLU()(down3)
+
+    up1 = tf.keras.layers.Conv2DTranspose(128,4,2,'same')(down3)
+    up1 = tf.keras.layers.BatchNormalization()(up1)
+    up1 = tf.keras.layers.ReLU()(up1)
+
+    up2 = tf.keras.layers.Conv2DTranspose(64,4,2,'same')(up1)
+    up2 = tf.keras.layers.BatchNormalization()(up2)
+    up2 = tf.keras.layers.ReLU()(up2)
+
+    last = tf.keras.layers.Conv2DTranspose(3,4,2,'same',activation='tanh')(up2)
+
+    return tf.keras.Model(inputs, last)
+
+generator = Generator()
+
+# -------------------------
+# Discriminator
+# -------------------------
+def Discriminator():
+    inp = tf.keras.layers.Input(shape=[256,256,3])
+    tar = tf.keras.layers.Input(shape=[256,256,3])
+
+    x = tf.keras.layers.concatenate([inp, tar])
+
+    down1 = tf.keras.layers.Conv2D(64,4,2,'same')(x)
+    down1 = tf.keras.layers.LeakyReLU()(down1)
+
+    down2 = tf.keras.layers.Conv2D(128,4,2,'same')(down1)
+    down2 = tf.keras.layers.BatchNormalization()(down2)
+    down2 = tf.keras.layers.LeakyReLU()(down2)
+
+    down3 = tf.keras.layers.Conv2D(256,4,2,'same')(down2)
+    down3 = tf.keras.layers.BatchNormalization()(down3)
+    down3 = tf.keras.layers.LeakyReLU()(down3)
+
+    last = tf.keras.layers.Conv2D(1,4,1,'same')(down3)
+
+    return tf.keras.Model([inp, tar], last)
+
+discriminator = Discriminator()
+
+# -------------------------
+# Loss
+# -------------------------
+loss_object = tf.keras.losses.BinaryCrossentropy(from_logits=True)
+
+def generator_loss(disc_generated_output, gen_output, target):
+    gan_loss = loss_object(tf.ones_like(disc_generated_output), disc_generated_output)
+    l1_loss = tf.reduce_mean(tf.abs(target - gen_output))
+    return gan_loss + (100 * l1_loss)
+
+def discriminator_loss(real, generated):
+    real_loss = loss_object(tf.ones_like(real), real)
+    fake_loss = loss_object(tf.zeros_like(generated), generated)
+    return real_loss + fake_loss
+
+# -------------------------
+# Optimizers
+# -------------------------
+generator_optimizer = tf.keras.optimizers.Adam(2e-4, beta_1=0.5)
+discriminator_optimizer = tf.keras.optimizers.Adam(2e-4, beta_1=0.5)
+
+# -------------------------
+# Training Step
+# -------------------------
+@tf.function
+def train_step(input_image):
+    target = input_image
+
+    with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape:
+        gen_output = generator(input_image, training=True)
+
+        real = discriminator([input_image, target], training=True)
+        fake = discriminator([input_image, gen_output], training=True)
+
+        gen_loss = generator_loss(fake, gen_output, target)
+        disc_loss = discriminator_loss(real, fake)
+
+    gen_grad = gen_tape.gradient(gen_loss, generator.trainable_variables)
+    disc_grad = disc_tape.gradient(disc_loss, discriminator.trainable_variables)
+
+    generator_optimizer.apply_gradients(zip(gen_grad, generator.trainable_variables))
+    discriminator_optimizer.apply_gradients(zip(disc_grad, discriminator.trainable_variables))
+
+# -------------------------
+# Training Loop
+# -------------------------
+EPOCHS = 5
+
+for epoch in range(EPOCHS):
+    for image in train_dataset.take(100):
+        train_step(image)
+
+    print("Epoch:", epoch+1)
+
+# -------------------------
+# Output
+# -------------------------
+for example in train_dataset.take(1):
+    prediction = generator(example, training=False)
+
+    plt.imshow(prediction[0] * 0.5 + 0.5)
+    plt.axis('off')
+    plt.savefig("outputs/result.png")
+    plt.show()
